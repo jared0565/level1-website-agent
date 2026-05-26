@@ -103,7 +103,13 @@ body{display:flex;flex-direction:column;min-height:100vh}
 [data-theme="dark"] .gen-preview-pane{background:#181818}
 .gen-preview-idle{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted);font-size:12px;pointer-events:none}
 .gen-preview-idle-ring{width:36px;height:36px;border-radius:50%;border:2px dashed var(--border)}
-#stream-frame{width:100%;height:100%;border:none;display:none}
+.stream-code-wrap{position:absolute;inset:0;display:none;flex-direction:column;overflow:hidden}
+.stream-code-header{display:flex;align-items:center;justify-content:space-between;padding:7px 14px;border-bottom:1px solid rgba(255,255,255,0.07);font-size:11px;font-family:var(--sans);color:#6B7280;background:#0D1117;flex-shrink:0}
+.stream-code-label{color:#8B949E;font-weight:500}
+.stream-code-chars{color:#3FB950}
+.stream-code{flex:1;overflow-y:auto;padding:14px;margin:0;font-family:'Courier New',Courier,monospace;font-size:11px;line-height:1.65;color:#ABB2BF;background:#0D1117;white-space:pre-wrap;word-break:break-all}
+.stream-code::-webkit-scrollbar{width:5px}
+.stream-code::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:3px}
 .spin-ring{width:48px;height:48px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--text);animation:spin .8s linear infinite;flex-shrink:0}
 @keyframes spin{to{transform:rotate(360deg)}}
 .gen-label{font-size:15px;font-weight:500;text-align:center}
@@ -275,9 +281,15 @@ body{display:flex;flex-direction:column;min-height:100vh}
   <div class="gen-preview-pane">
     <div class="gen-preview-idle" id="gen-preview-idle">
       <div class="gen-preview-idle-ring"></div>
-      <span>Preview will appear as the site streams in</span>
+      <span>Code will stream here as the site is written</span>
     </div>
-    <iframe id="stream-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+    <div class="stream-code-wrap" id="stream-code-wrap">
+      <div class="stream-code-header">
+        <span class="stream-code-label">HTML output</span>
+        <span class="stream-code-chars" id="stream-chars">0 chars</span>
+      </div>
+      <pre class="stream-code" id="stream-code"></pre>
+    </div>
   </div>
 </div>
 
@@ -295,7 +307,7 @@ body{display:flex;flex-direction:column;min-height:100vh}
       </div>
     </div>
     <div class="iframe-wrap" id="iframe-wrap">
-      <iframe id="preview-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+      <iframe id="preview-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>
     </div>
     <div class="bottom-bar">
       <div class="vp-btns">
@@ -332,6 +344,7 @@ let generatedHTML = '';
 let isDark = false;
 let selectedIndustry = null, selectedPalette = null, selectedTone = null;
 let sourceURL = null;
+let previewBlobURL = null;
 
 // ─── DATA ─────────────────────────────────────────────────────────────────────
 const industries = [
@@ -713,8 +726,17 @@ async function generate() {
     renderSteps(stepIdx);
   }, 2000);
 
-  const streamFrame = document.getElementById('stream-frame');
   const idlePlaceholder = document.getElementById('gen-preview-idle');
+  const codeWrap = document.getElementById('stream-code-wrap');
+  const codeEl = document.getElementById('stream-code');
+  const charsEl = document.getElementById('stream-chars');
+
+  function resetStreamPanel() {
+    idlePlaceholder.style.display = '';
+    codeWrap.style.display = 'none';
+    codeEl.textContent = '';
+    charsEl.textContent = '0 chars';
+  }
 
   try {
     const res = await fetch('/api/generate', {
@@ -736,13 +758,11 @@ async function generate() {
       throw new Error(errData.error?.message || 'API error ' + res.status);
     }
 
-    // Parse SSE stream
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let lineBuffer = '';
     let htmlAccum = '';
-    let lastFrameUpdate = 0;
-    let previewShown = false;
+    let codeShown = false;
 
     document.getElementById('gen-sub').textContent = 'Streaming output…';
 
@@ -764,20 +784,18 @@ async function generate() {
           if (!delta) continue;
           htmlAccum += delta;
 
-          // Reveal iframe on first real HTML content
-          if (!previewShown && htmlAccum.includes('<')) {
-            previewShown = true;
+          // Reveal code pane on first chunk
+          if (!codeShown) {
+            codeShown = true;
             idlePlaceholder.style.display = 'none';
-            streamFrame.style.display = 'block';
+            codeWrap.style.display = 'flex';
           }
 
-          // Throttle iframe updates to every 120ms
-          const now = Date.now();
-          if (previewShown && now - lastFrameUpdate > 120) {
-            streamFrame.srcdoc = htmlAccum;
-            lastFrameUpdate = now;
-          }
-        } catch { /* malformed chunk — skip */ }
+          // Update code display and char count
+          codeEl.textContent = htmlAccum;
+          charsEl.textContent = htmlAccum.length.toLocaleString() + ' chars';
+          codeEl.scrollTop = codeEl.scrollHeight;
+        } catch { /* malformed SSE chunk — skip */ }
       }
     }
 
@@ -788,22 +806,23 @@ async function generate() {
 
     renderSteps(STEPS.length);
     generatedHTML = html;
-    streamFrame.srcdoc = generatedHTML;
+
+    // Blob URL gives the iframe a real navigation context — no srcdoc blank-screen issues
+    if (previewBlobURL) URL.revokeObjectURL(previewBlobURL);
+    previewBlobURL = URL.createObjectURL(new Blob([generatedHTML], { type: 'text/html' }));
 
     setTimeout(() => {
-      // Reset stream frame for next run
-      idlePlaceholder.style.display = '';
-      streamFrame.style.display = 'none';
-      streamFrame.srcdoc = '';
-      document.getElementById('preview-frame').srcdoc = generatedHTML;
+      resetStreamPanel();
       showScreen('s-preview');
-    }, 800);
+      // Set src after the screen is visible so the browser renders it immediately
+      requestAnimationFrame(() => {
+        document.getElementById('preview-frame').src = previewBlobURL;
+      });
+    }, 600);
 
   } catch (err) {
     clearInterval(stepInterval);
-    idlePlaceholder.style.display = '';
-    streamFrame.style.display = 'none';
-    streamFrame.srcdoc = '';
+    resetStreamPanel();
     showScreen('s-builder');
     showErr(err.message || 'An unexpected error occurred.');
   }
@@ -875,7 +894,8 @@ function restart() {
     .forEach(id => { document.getElementById(id).value = ''; });
   ['industry-custom-row','palette-custom-row','tone-custom-row']
     .forEach(id => { document.getElementById(id).classList.remove('visible'); });
-  document.getElementById('preview-frame').srcdoc = '';
+  if (previewBlobURL) { URL.revokeObjectURL(previewBlobURL); previewBlobURL = null; }
+  document.getElementById('preview-frame').src = '';
   document.getElementById('prog').style.width = '0';
   document.getElementById('gen-btn').disabled = true;
   hideErr();

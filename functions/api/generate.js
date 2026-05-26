@@ -5,7 +5,7 @@ export async function onRequestPost(context) {
   if (!apiKey) {
     return new Response(
       JSON.stringify({ error: { message: 'OPENROUTER_API_KEY secret not configured on this deployment.' } }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      { status: 500, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
     );
   }
 
@@ -15,11 +15,14 @@ export async function onRequestPost(context) {
   } catch {
     return new Response(
       JSON.stringify({ error: { message: 'Invalid JSON body.' } }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } }
+      { status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
     );
   }
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  // Force streaming on
+  body.stream = true;
+
+  const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -30,11 +33,21 @@ export async function onRequestPost(context) {
     body: JSON.stringify(body)
   });
 
-  const data = await res.json();
-  return new Response(JSON.stringify(data), {
-    status: res.status,
+  if (!upstream.ok) {
+    const err = await upstream.json().catch(() => ({}));
+    return new Response(
+      JSON.stringify({ error: err.error || { message: 'Upstream API error ' + upstream.status } }),
+      { status: upstream.status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
+    );
+  }
+
+  // Pipe the SSE stream straight through
+  return new Response(upstream.body, {
+    status: 200,
     headers: {
-      'Content-Type': 'application/json',
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
       'Access-Control-Allow-Origin': '*'
     }
   });

@@ -97,12 +97,19 @@ body{display:flex;flex-direction:column;min-height:100vh}
 .btn-solid{width:100%;padding:14px;border-radius:var(--radius);border:none;background:var(--text);color:var(--surface);font-family:var(--sans);font-size:14px;font-weight:500;cursor:pointer;transition:opacity .15s}
 [data-theme="dark"] .btn-solid{background:#EFEFEF;color:#111}
 .btn-solid:disabled{opacity:.35;cursor:not-allowed}
-#s-generating{align-items:center;justify-content:center;gap:28px}
-.spin-ring{width:56px;height:56px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--text);animation:spin .8s linear infinite}
+#s-generating{flex-direction:row;align-items:stretch;justify-content:flex-start}
+.gen-panel{width:300px;flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;border-right:1px solid var(--border);padding:32px 24px}
+.gen-preview-pane{flex:1;overflow:hidden;position:relative;background:#EFEFED}
+[data-theme="dark"] .gen-preview-pane{background:#181818}
+.gen-preview-idle{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted);font-size:12px;pointer-events:none}
+.gen-preview-idle-ring{width:36px;height:36px;border-radius:50%;border:2px dashed var(--border)}
+#stream-frame{width:100%;height:100%;border:none;display:none}
+.spin-ring{width:48px;height:48px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--text);animation:spin .8s linear infinite;flex-shrink:0}
 @keyframes spin{to{transform:rotate(360deg)}}
-.gen-label{font-size:16px;font-weight:500}
-.gen-sub{font-size:13px;color:var(--muted)}
-.steps-list{width:260px;display:flex;flex-direction:column;gap:10px}
+.gen-label{font-size:15px;font-weight:500;text-align:center}
+.gen-sub{font-size:12px;color:var(--muted);text-align:center}
+.steps-list{width:100%;display:flex;flex-direction:column;gap:8px}
+@media(max-width:640px){#s-generating{flex-direction:column}.gen-panel{width:100%;border-right:none;border-bottom:1px solid var(--border);padding:20px;justify-content:flex-start;gap:14px}.gen-preview-pane{flex:1;min-height:260px}}
 .step-row{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);transition:color .3s}
 .step-row.done{color:#16A34A}
 .step-row.active-step{color:var(--text);font-weight:500}
@@ -259,10 +266,19 @@ body{display:flex;flex-direction:column;min-height:100vh}
 
 <!-- SCREEN 2: GENERATING -->
 <div class="screen" id="s-generating">
-  <div class="spin-ring"></div>
-  <div class="gen-label" id="gen-label">Building your site…</div>
-  <div class="gen-sub" id="gen-sub">Sending brief to generator agent</div>
-  <div class="steps-list" id="steps-list"></div>
+  <div class="gen-panel">
+    <div class="spin-ring"></div>
+    <div class="gen-label" id="gen-label">Building your site…</div>
+    <div class="gen-sub" id="gen-sub">Sending brief to generator agent</div>
+    <div class="steps-list" id="steps-list"></div>
+  </div>
+  <div class="gen-preview-pane">
+    <div class="gen-preview-idle" id="gen-preview-idle">
+      <div class="gen-preview-idle-ring"></div>
+      <span>Preview will appear as the site streams in</span>
+    </div>
+    <iframe id="stream-frame" sandbox="allow-scripts allow-same-origin"></iframe>
+  </div>
 </div>
 
 <!-- SCREEN 3: PREVIEW -->
@@ -697,6 +713,9 @@ async function generate() {
     renderSteps(stepIdx);
   }, 2000);
 
+  const streamFrame = document.getElementById('stream-frame');
+  const idlePlaceholder = document.getElementById('gen-preview-idle');
+
   try {
     const res = await fetch('/api/generate', {
       method: 'POST',
@@ -711,29 +730,80 @@ async function generate() {
       })
     });
 
-    clearInterval(stepInterval);
-
     if (!res.ok) {
+      clearInterval(stepInterval);
       const errData = await res.json().catch(() => ({}));
       throw new Error(errData.error?.message || 'API error ' + res.status);
     }
 
-    const data = await res.json();
-    let html = data.choices?.[0]?.message?.content || '';
-    html = html.replace(/^```html\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
+    // Parse SSE stream
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let lineBuffer = '';
+    let htmlAccum = '';
+    let lastFrameUpdate = 0;
+    let previewShown = false;
 
+    document.getElementById('gen-sub').textContent = 'Streaming output…';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      lineBuffer += decoder.decode(value, { stream: true });
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const chunk = JSON.parse(payload);
+          const delta = chunk.choices?.[0]?.delta?.content || '';
+          if (!delta) continue;
+          htmlAccum += delta;
+
+          // Reveal iframe on first real HTML content
+          if (!previewShown && htmlAccum.includes('<')) {
+            previewShown = true;
+            idlePlaceholder.style.display = 'none';
+            streamFrame.style.display = 'block';
+          }
+
+          // Throttle iframe updates to every 120ms
+          const now = Date.now();
+          if (previewShown && now - lastFrameUpdate > 120) {
+            streamFrame.srcdoc = htmlAccum;
+            lastFrameUpdate = now;
+          }
+        } catch { /* malformed chunk — skip */ }
+      }
+    }
+
+    clearInterval(stepInterval);
+
+    let html = htmlAccum.replace(/^```html\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/i,'').trim();
     if (!html.match(/<!doctype|<html/i)) throw new Error('Generated output is not valid HTML.');
 
     renderSteps(STEPS.length);
     generatedHTML = html;
+    streamFrame.srcdoc = generatedHTML;
 
     setTimeout(() => {
+      // Reset stream frame for next run
+      idlePlaceholder.style.display = '';
+      streamFrame.style.display = 'none';
+      streamFrame.srcdoc = '';
       document.getElementById('preview-frame').srcdoc = generatedHTML;
       showScreen('s-preview');
-    }, 500);
+    }, 800);
 
   } catch (err) {
     clearInterval(stepInterval);
+    idlePlaceholder.style.display = '';
+    streamFrame.style.display = 'none';
+    streamFrame.srcdoc = '';
     showScreen('s-builder');
     showErr(err.message || 'An unexpected error occurred.');
   }

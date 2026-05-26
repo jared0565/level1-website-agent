@@ -13,15 +13,24 @@ const MAX_OUTPUT_TOKENS = 8000;
 const RATE_LIMIT_WINDOW_SECONDS = 600;
 const RATE_LIMIT_MAX_REQUESTS = 5;
 
-const ALLOWED_ORIGINS = new Set([
-  'https://level1-website-agent.pages.dev',
-  'http://localhost:8788',
-  'http://127.0.0.1:8788'
-]);
+const PRODUCTION_HOSTNAME = 'level1-website-agent.pages.dev';
+const PREVIEW_HOSTNAME_SUFFIX = '.level1-website-agent.pages.dev';
+const LOCAL_ORIGINS = new Set(['http://localhost:8788', 'http://127.0.0.1:8788']);
 
 function isAllowedOrigin(request) {
   const origin = request.headers.get('Origin');
-  return !origin || ALLOWED_ORIGINS.has(origin);
+  if (!origin) return true;
+  if (LOCAL_ORIGINS.has(origin)) return true;
+
+  try {
+    const url = new URL(origin);
+    return (
+      url.protocol === 'https:' &&
+      (url.hostname === PRODUCTION_HOSTNAME || url.hostname.endsWith(PREVIEW_HOSTNAME_SUFFIX))
+    );
+  } catch {
+    return false;
+  }
 }
 
 function corsHeaders(request, contentType) {
@@ -30,7 +39,7 @@ function corsHeaders(request, contentType) {
   };
   const origin = request.headers.get('Origin');
 
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
+  if (origin && isAllowedOrigin(request)) {
     headers['Access-Control-Allow-Origin'] = origin;
   }
 

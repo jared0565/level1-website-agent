@@ -125,6 +125,28 @@ test('rejects browser requests from unapproved origins before calling OpenRouter
   assert.equal(response.headers.get('Access-Control-Allow-Origin'), null);
 });
 
+test('allows Cloudflare Pages preview deployment origins for this project', async () => {
+  globalThis.fetch = async () => new Response('data: [DONE]\n\n', {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' }
+  });
+
+  const response = await onRequestPost({
+    env: { OPENROUTER_API_KEY: 'test-key' },
+    request: jsonRequest({
+      model: 'anthropic/claude-sonnet-latest',
+      max_tokens: 8000,
+      messages: [
+        { role: 'system', content: 'system prompt' },
+        { role: 'user', content: 'user prompt' }
+      ]
+    }, 'https://4b13e535.level1-website-agent.pages.dev')
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), 'https://4b13e535.level1-website-agent.pages.dev');
+});
+
 test('rate limits repeated generation requests from the same client before calling OpenRouter', async () => {
   globalThis.caches = memoryCaches();
 

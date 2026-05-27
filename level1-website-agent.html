@@ -302,7 +302,10 @@ body{display:flex;flex-direction:column;min-height:100vh}
         <div class="browser-url">yoursite.com</div>
       </div>
       <div class="browser-right">
+        <button class="btn-outline-sm" onclick="openStandaloneSite()">↗ Open Site</button>
         <button class="btn-outline-sm" onclick="viewSource()">&lt;/&gt; Source</button>
+        <button class="btn-outline-sm" onclick="saveDemoSite()">＋ Save Demo</button>
+        <button class="btn-outline-sm" onclick="openDemoLibrary()">Library</button>
         <button class="btn-filled-sm" onclick="downloadSite()">↓ Download HTML</button>
       </div>
     </div>
@@ -345,6 +348,9 @@ let isDark = false;
 let selectedIndustry = null, selectedPalette = null, selectedTone = null;
 let sourceURL = null;
 let previewBlobURL = null;
+let libraryURL = null;
+let libraryBlobURLs = [];
+const DEMO_LIBRARY_KEY = 'level1WebsiteAgent.demoLibrary.v1';
 
 // ─── DATA ─────────────────────────────────────────────────────────────────────
 const industries = [
@@ -701,7 +707,7 @@ async function generate() {
   document.getElementById('gen-sub').textContent = 'Sending brief to generator agent';
   renderSteps(0);
 
-  const SYSTEM_PROMPT = 'You are an expert frontend developer. Output ONLY a single complete HTML file. No markdown, no code fences, no backticks, no explanation. Start with <!DOCTYPE html> and end with </html>. Build a polished Level 1 static website with: sticky nav (logo, links, cart badge, sign-in), scrolling ticker banner, hero (split layout, placeholder image right, stat row, fade-in), products/services grid (4 cards, hover lift), features section (dark bg, 4 SVG icon tiles), testimonials (3 cards, stars, avatar initials), newsletter (email + toast), footer (4 cols), slide-out cart drawer, toast system. Images = styled placeholder divs with inline SVG. No external image URLs. All CSS in style, JS in script. CSS variables for colours. Realistic copy. If existing website content is provided, extract and reuse real business names, taglines, product/service names, descriptions, team names, testimonials, and any other factual copy — do NOT use generic placeholder text for anything that appears in the existing content.';
+  const SYSTEM_PROMPT = 'You are an expert frontend developer. Output ONLY a single complete HTML file. No markdown, code fences, backticks, or explanation. Start with <!DOCTYPE html> and end with </html>. Build a polished Level 1 fully functional standalone website, not an app-shell preview. It must work when opened directly from a file or Blob URL. Include: sticky nav with logo, links, cart badge, sign-in; scrolling ticker; hero; products/services grid; features; testimonials; newsletter with toast; slide-out cart drawer; Contact section with accessible contact form, validation, success toast, phone/email/address blocks; complete footer with 4 columns and working links. Add built-in single-file page navigation using hash routes or section panels for Home, Products or Services, About, Contact, Privacy Policy, Terms of Service, and Accessibility. Legal pages must contain realistic business-specific copy, disclaimers, data/contact details placeholders, effective date, and footer links. Images = styled placeholder divs with inline SVG only. No external image URLs. All CSS in style, JS in script. Use CSS variables for colours. Use realistic copy. If existing website content is provided, extract and reuse real business names, taglines, product/service names, descriptions, team names, testimonials, and factual copy; do NOT use generic placeholder text for anything that appears in existing content.';
 
   const existingURL = document.getElementById('inp-url').value.trim();
   let siteContent = null;
@@ -851,6 +857,100 @@ function downloadSite() {
   URL.revokeObjectURL(url);
 }
 
+function siteSlug(name) {
+  return (name || 'website')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || 'website';
+}
+
+function escapeHTML(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function readDemoLibrary() {
+  try {
+    const raw = localStorage.getItem(DEMO_LIBRARY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(item => item && typeof item.html === 'string') : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function writeDemoLibrary(items) {
+  localStorage.setItem(DEMO_LIBRARY_KEY, JSON.stringify(items.slice(0, 12)));
+}
+
+function ensureCurrentSiteBlob() {
+  if (!generatedHTML) return null;
+  if (!previewBlobURL) {
+    previewBlobURL = URL.createObjectURL(new Blob([generatedHTML], { type: 'text/html' }));
+  }
+  return previewBlobURL;
+}
+
+function openStandaloneSite() {
+  const url = ensureCurrentSiteBlob();
+  if (!url) return;
+  window.open(url, '_blank', 'noopener');
+}
+
+function saveDemoSite() {
+  if (!generatedHTML) return;
+  const item = {
+    id: Date.now().toString(36),
+    name: state.name || 'Generated website',
+    industry: state.industry || 'Website',
+    createdAt: new Date().toISOString(),
+    slug: siteSlug(state.name),
+    html: generatedHTML
+  };
+  const items = readDemoLibrary().filter(existing => existing.html !== generatedHTML);
+  items.unshift(item);
+
+  try {
+    writeDemoLibrary(items);
+    alert('Saved to this browser demo library.');
+  } catch (_) {
+    showErr('Could not save demo locally. Download the HTML file instead.');
+  }
+}
+
+function openDemoLibrary() {
+  const items = readDemoLibrary();
+  if (libraryURL) URL.revokeObjectURL(libraryURL);
+  libraryBlobURLs.forEach(url => URL.revokeObjectURL(url));
+  libraryBlobURLs = [];
+
+  const rows = items.map(item => {
+    const siteURL = URL.createObjectURL(new Blob([item.html], { type: 'text/html' }));
+    libraryBlobURLs.push(siteURL);
+    const date = item.createdAt ? new Date(item.createdAt).toLocaleString() : 'Saved demo';
+    return '<article class="demo-card"><div><h2>' + escapeHTML(item.name) + '</h2><p>' +
+      escapeHTML(item.industry) + ' · ' + escapeHTML(date) + '</p></div><div class="actions">' +
+      '<a href="' + siteURL + '" target="_blank" rel="noopener">Open site</a>' +
+      '<a href="' + siteURL + '" download="' + escapeHTML(item.slug || 'website') + '.html">Download</a>' +
+      '</div></article>';
+  }).join('');
+
+  const empty = '<section class="empty"><h2>No demos saved yet</h2><p>Generate a website, then use Save Demo from the preview screen.</p></section>';
+  const libraryDoc = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Generated Website Demo Library</title>' +
+    '<style>body{margin:0;font-family:Inter,Arial,sans-serif;background:#f6f4ef;color:#171717}main{max-width:1040px;margin:0 auto;padding:48px 22px}header{display:flex;justify-content:space-between;gap:20px;align-items:end;border-bottom:1px solid #ddd6c8;padding-bottom:22px;margin-bottom:28px}h1{font-size:clamp(32px,5vw,58px);line-height:1;margin:0;letter-spacing:-.03em}p{color:#666;margin:8px 0 0}.demo-card{display:flex;justify-content:space-between;gap:18px;align-items:center;border:1px solid #ddd6c8;background:#fff;border-radius:8px;padding:18px 20px;margin-bottom:12px;box-shadow:0 10px 30px rgba(0,0,0,.04)}h2{margin:0 0 6px;font-size:20px}.actions{display:flex;gap:10px;flex-wrap:wrap}.actions a{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;border-radius:6px;text-decoration:none;background:#171717;color:#fff;font-size:14px}.actions a:nth-child(2){background:transparent;color:#171717;border:1px solid #c9c0b2}.empty{border:1px dashed #c9c0b2;border-radius:8px;padding:28px;background:#fff}@media(max-width:720px){header,.demo-card{align-items:flex-start;flex-direction:column}.actions{width:100%}.actions a{flex:1}}</style></head>' +
+    '<body><main><header><div><h1>Demo library</h1><p>Standalone generated websites saved in this browser.</p></div><p>' +
+    items.length + ' saved</p></header>' + (rows || empty) + '</main></body></html>';
+
+  libraryURL = URL.createObjectURL(new Blob([libraryDoc], { type: 'text/html' }));
+  window.open(libraryURL, '_blank', 'noopener');
+}
+
 // ─── VIEW SOURCE ──────────────────────────────────────────────────────────────
 function viewSource() {
   if (!generatedHTML) return;
@@ -895,6 +995,9 @@ function restart() {
   ['industry-custom-row','palette-custom-row','tone-custom-row']
     .forEach(id => { document.getElementById(id).classList.remove('visible'); });
   if (previewBlobURL) { URL.revokeObjectURL(previewBlobURL); previewBlobURL = null; }
+  if (libraryURL) { URL.revokeObjectURL(libraryURL); libraryURL = null; }
+  libraryBlobURLs.forEach(url => URL.revokeObjectURL(url));
+  libraryBlobURLs = [];
   document.getElementById('preview-frame').src = '';
   document.getElementById('prog').style.width = '0';
   document.getElementById('gen-btn').disabled = true;
